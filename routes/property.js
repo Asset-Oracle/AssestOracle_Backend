@@ -1,3 +1,4 @@
+const axios = require('axios');
 const express = require('express');
 const router = express.Router();
 
@@ -62,14 +63,71 @@ router.post('/analyze', async (req, res) => {
     const riskScore = 78; // Mock score
 
     // AI Analysis (Noah will replace this)
-    const aiAnalysis = {
-      riskScore,
-      fraudLikelihood: 'LOW',
-      investmentSummary: `This property shows ${valuationData.marketTrend.toLowerCase()} market trends. The estimated value of $${valuationData.estimatedValue.toLocaleString()} is consistent with tax assessments.`,
-      yieldPotential: 7.5,
-      recommendation: 'STRONG BUY',
-      confidenceLevel: 0.85
-    };
+    // AI Analysis - Call Noah's AI Service
+let aiAnalysis;
+try {
+  const aiResponse = await axios.post('http://localhost:5001/api/score-investment', {
+    property_type: 'Real Estate',
+    location: `${city}, ${state}`,
+    valuation: valuationData.estimatedValue,
+    annual_yield: calculateYield(valuationData.estimatedValue, registryData.taxAssessment),
+    market_data: {
+      avg_price_per_sqft: valuationData.pricePerSqFt,
+      trend: valuationData.marketTrend,
+      comparable_sales: `${valuationData.comparables.length} recent sales`
+    }
+  });
+
+  // Transform Noah's response to our format
+  const noahResult = aiResponse.data.data;
+  aiAnalysis = {
+    riskScore: noahResult.investment_score || 75,
+    fraudLikelihood: determineFraudLikelihood(noahResult.risks),
+    investmentSummary: noahResult.summary,
+    yieldPotential: propertyData.annual_yield || 5.0,
+    recommendation: getRecommendation(noahResult.investment_score),
+    strengths: noahResult.strengths,
+    risks: noahResult.risks,
+    opportunities: noahResult.opportunities,
+    confidenceLevel: 0.85,
+    analyzedAt: new Date().toISOString()
+  };
+
+  console.log('AI Analysis received from Noah\'s service');
+
+} catch (error) {
+  console.error('AI service unavailable, using fallback:', error.message);
+  // Fallback if Noah's service is down
+  aiAnalysis = {
+    riskScore: riskScore,
+    fraudLikelihood: 'MEDIUM',
+    investmentSummary: `Property analysis based on available data. Market shows ${valuationData.marketTrend.toLowerCase()} trends.`,
+    yieldPotential: 5.0,
+    recommendation: 'HOLD',
+    confidenceLevel: 0.5,
+    analyzedAt: new Date().toISOString()
+  };
+}
+
+// Helper functions
+function calculateYield(value, taxAssessment) {
+  const avgRent = value * 0.005; // Assume 0.5% monthly rent
+  const annualRent = avgRent * 12;
+  return ((annualRent / value) * 100).toFixed(2);
+}
+
+function determineFraudLikelihood(risks) {
+  if (!risks || risks.length === 0) return 'LOW';
+  if (risks.length >= 3) return 'HIGH';
+  return 'MEDIUM';
+}
+
+function getRecommendation(score) {
+  if (score >= 80) return 'STRONG BUY';
+  if (score >= 70) return 'BUY';
+  if (score >= 50) return 'HOLD';
+  return 'AVOID';
+}
 
     res.json({
       success: true,
