@@ -3,27 +3,49 @@ const router = express.Router();
 const supabase = require('../supabaseClient');
 const crypto = require('crypto');
 
-// GET /api/assets - Get all assets (marketplace)
+// GET /api/assets - Get all assets (ONLY VERIFIED for public)
 router.get('/', async (req, res) => {
   try {
-    const { status, limit = 20 } = req.query;
+    const { 
+      status, 
+      category, 
+      search, 
+      limit = 20, 
+      page = 1 
+    } = req.query;
 
-    let query = supabase.from('assets').select('*');
-
-    if (status) {
-      query = query.eq('verification_status', status.toUpperCase());
+    // IMPORTANT: Default to VERIFIED only for public marketplace
+    // Users can only see PENDING/REJECTED assets in their own portfolio
+    let query = supabase
+      .from('assets')
+      .select('*', { count: 'exact' })
+      .eq('verification_status', 'VERIFIED');  // Force VERIFIED only
+    
+    // Allow filtering by category
+    if (category) {
+      query = query.eq('category', category.toUpperCase());
+    }
+    
+    // Allow search
+    if (search) {
+      query = query.or(`name.ilike.%${search}%,location->city.ilike.%${search}%,location->state.ilike.%${search}%`);
     }
 
-    const { data: assets, error } = await query
+    const { data: assets, error, count } = await query
       .order('created_at', { ascending: false })
-      .limit(parseInt(limit));
+      .range((parseInt(page) - 1) * parseInt(limit), parseInt(page) * parseInt(limit) - 1);
 
     if (error) throw error;
 
     res.json({
       success: true,
       data: assets,
-      total: assets.length
+      pagination: {
+        total: count || 0,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil((count || 0) / parseInt(limit))
+      }
     });
 
   } catch (error) {
@@ -35,6 +57,8 @@ router.get('/', async (req, res) => {
 // GET /api/assets/:id - Get single asset
 router.get('/:id', async (req, res) => {
   try {
+    const { walletAddress } = req.query; // Optional wallet address to check ownership
+
     const { data: asset, error } = await supabase
       .from('assets')
       .select('*')
@@ -43,6 +67,17 @@ router.get('/:id', async (req, res) => {
 
     if (error || !asset) {
       return res.status(404).json({ error: 'Asset not found' });
+    }
+
+    // Access Control: Only show PENDING/REJECTED assets to owner
+    if (asset.verification_status !== 'VERIFIED') {
+      // Check if requester is the owner
+      if (!walletAddress || asset.owner_wallet.toLowerCase() !== walletAddress.toLowerCase()) {
+        return res.status(403).json({ 
+          error: 'This asset is not yet verified and can only be viewed by the owner',
+          message: 'Asset is pending verification'
+        });
+      }
     }
 
     res.json({
