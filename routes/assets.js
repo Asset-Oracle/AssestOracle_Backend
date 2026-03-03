@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const supabase = require('../supabaseClient');
 const crypto = require('crypto');
+const axios = require('axios');
 
 // GET /api/assets - Get all assets (ONLY VERIFIED for public)
 router.get('/', async (req, res) => {
@@ -91,7 +92,7 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// POST /api/assets/register - Register new asset
+// POST /api/assets/register - Register new asset with AUTOMATIC verification
 router.post('/register', async (req, res) => {
   try {
     const {
@@ -115,7 +116,10 @@ router.post('/register', async (req, res) => {
     const docString = JSON.stringify({ name, description, location });
     const documentHash = crypto.createHash('sha256').update(docString).digest('hex');
 
-    const { data: asset, error } = await supabase
+    console.log(`📝 Registering asset: ${name}`);
+
+    // Create asset (starts as PENDING)
+    const { data: asset, error: insertError } = await supabase
       .from('assets')
       .insert([
         {
@@ -137,12 +141,70 @@ router.post('/register', async (req, res) => {
       .select()
       .single();
 
-    if (error) throw error;
+    if (insertError) throw insertError;
 
+    console.log(`✅ Asset created: ${asset.id}`);
+    console.log(`🔍 Starting automatic verification...`);
+
+    // ⭐ AUTOMATIC VERIFICATION PROCESS
+    // Runs in background - don't block the response
+    setImmediate(async () => {
+      try {
+        const baseUrl = process.env.NODE_ENV === 'production' 
+          ? 'https://assetoracle-backend.onrender.com'
+          : 'http://localhost:5000';
+
+        // Step 1: Analyze property
+        console.log(`  → Analyzing property for asset ${asset.id}...`);
+        const analysisResponse = await axios.post(`${baseUrl}/api/property/analyze`, {
+          address: location?.address || name,
+          city: location?.city || '',
+          state: location?.state || ''
+        });
+
+        // Step 2: Run CRE workflow
+        console.log(`  → Running Chainlink verification for asset ${asset.id}...`);
+        const creResponse = await axios.post(`${baseUrl}/api/chainlink/run-workflow`, {
+          propertyAddress: `${location?.address || name}, ${location?.city || ''}, ${location?.state || ''}`
+        });
+
+        // Step 3: Update to VERIFIED
+        const verificationId = `VER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+        
+        const { error: updateError } = await supabase
+          .from('assets')
+          .update({
+            verification_status: 'VERIFIED',
+            ai_analysis: analysisResponse.data.data.aiAnalysis || {},
+            blockchain_data: {
+              document_hash: documentHash,
+              network: 'Avalanche',
+              verification_id: verificationId,
+              verified_at: new Date().toISOString(),
+              chainlink_don: 'fun-avalanche-fuji-1'
+            }
+          })
+          .eq('id', asset.id);
+
+        if (updateError) throw updateError;
+
+        console.log(`✅ Asset ${asset.id} automatically verified!`);
+
+      } catch (verificationError) {
+        console.error(`⚠️ Auto-verification failed for asset ${asset.id}:`, verificationError.message);
+        // Asset stays PENDING if verification fails
+      }
+    });
+
+    // Return immediately (verification happens in background)
     res.status(201).json({
       success: true,
-      message: 'Asset registered successfully',
-      data: asset
+      message: 'Asset registered successfully. Verification in progress...',
+      data: asset,
+      verification: {
+        status: 'PROCESSING',
+        note: 'Asset will be automatically verified within 30-60 seconds. Refresh to see verified status.'
+      }
     });
 
   } catch (error) {
@@ -151,7 +213,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// POST /api/assets/:id/verify - Verify asset
+// POST /api/assets/:id/verify - Manual verify asset (backup endpoint)
 router.post('/:id/verify', async (req, res) => {
   try {
     const verificationId = `VER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
