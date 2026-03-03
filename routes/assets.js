@@ -55,7 +55,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/assets/:id - Get single asset
+// GET /api/assets/:id - Get single asset (VERIFIED = public, PENDING = owner only)
 router.get('/:id', async (req, res) => {
   try {
     const { walletAddress } = req.query; // Optional wallet address to check ownership
@@ -70,17 +70,25 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Asset not found' });
     }
 
-    // Access Control: Only show PENDING/REJECTED assets to owner
-    if (asset.verification_status !== 'VERIFIED') {
-      // Check if requester is the owner
+    // ✅ VERIFIED assets are PUBLIC - anyone can view them
+    if (asset.verification_status === 'VERIFIED') {
+      return res.json({
+        success: true,
+        data: asset
+      });
+    }
+
+    // ⚠️ PENDING/REJECTED assets require ownership verification
+    if (asset.verification_status === 'PENDING' || asset.verification_status === 'REJECTED') {
       if (!walletAddress || asset.owner_wallet.toLowerCase() !== walletAddress.toLowerCase()) {
         return res.status(403).json({ 
-          error: 'This asset is not yet verified and can only be viewed by the owner',
-          message: 'Asset is pending verification'
+          error: 'This asset is pending verification and can only be viewed by the owner',
+          message: 'Asset not yet publicly available'
         });
       }
     }
 
+    // Return asset (owner viewing their pending asset)
     res.json({
       success: true,
       data: asset
@@ -147,7 +155,7 @@ router.post('/register', async (req, res) => {
     console.log(`🔍 Starting automatic verification...`);
 
     // ⭐ AUTOMATIC VERIFICATION PROCESS
-    // Runs in background - don't block the response
+    // Runs in background - doesn't block the response
     setImmediate(async () => {
       try {
         const baseUrl = process.env.NODE_ENV === 'production' 
