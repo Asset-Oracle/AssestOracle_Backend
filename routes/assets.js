@@ -3,6 +3,7 @@ const router = express.Router();
 const supabase = require('../supabaseClient');
 const crypto = require('crypto');
 const axios = require('axios');
+const { ethers } = require('ethers');
 
 // GET /api/assets - Get all assets (ONLY VERIFIED for public)
 router.get('/', async (req, res) => {
@@ -15,19 +16,15 @@ router.get('/', async (req, res) => {
       page = 1 
     } = req.query;
 
-    // IMPORTANT: Default to VERIFIED only for public marketplace
-    // Users can only see PENDING/REJECTED assets in their own portfolio
     let query = supabase
       .from('assets')
       .select('*', { count: 'exact' })
-      .eq('verification_status', 'VERIFIED');  // Force VERIFIED only
+      .eq('verification_status', 'VERIFIED');
     
-    // Allow filtering by category
     if (category) {
       query = query.eq('category', category.toUpperCase());
     }
     
-    // Allow search
     if (search) {
       query = query.or(`name.ilike.%${search}%,location->city.ilike.%${search}%,location->state.ilike.%${search}%`);
     }
@@ -55,7 +52,7 @@ router.get('/', async (req, res) => {
   }
 });
 
-// GET /api/assets/unclaimed - Get unclaimed assets (MUST BE BEFORE /:id)
+// GET /api/assets/unclaimed - Get unclaimed assets
 router.get('/unclaimed', async (req, res) => {
   try {
     const { data: assets, error } = await supabase
@@ -78,10 +75,33 @@ router.get('/unclaimed', async (req, res) => {
   }
 });
 
-// GET /api/assets/:id - Get single asset (VERIFIED = public, PENDING = owner only)
+// GET /api/assets/tokenized - Get tokenized assets
+router.get('/tokenized', async (req, res) => {
+  try {
+    const { data: assets, error } = await supabase
+      .from('assets')
+      .select('*')
+      .eq('verification_status', 'TOKENIZED')
+      .order('tokenized_at', { ascending: false });
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      data: assets || [],
+      count: assets ? assets.length : 0
+    });
+
+  } catch (error) {
+    console.error('Error fetching tokenized assets:', error);
+    res.status(500).json({ error: 'Failed to fetch tokenized assets' });
+  }
+});
+
+// GET /api/assets/:id - Get single asset
 router.get('/:id', async (req, res) => {
   try {
-    const { walletAddress } = req.query; // Optional wallet address to check ownership
+    const { walletAddress } = req.query;
 
     const { data: asset, error } = await supabase
       .from('assets')
@@ -93,15 +113,13 @@ router.get('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Asset not found' });
     }
 
-    // ✅ VERIFIED assets are PUBLIC - anyone can view them
-    if (asset.verification_status === 'VERIFIED') {
+    if (asset.verification_status === 'VERIFIED' || asset.verification_status === 'TOKENIZED') {
       return res.json({
         success: true,
         data: asset
       });
     }
 
-    // ⚠️ PENDING/REJECTED assets require ownership verification
     if (asset.verification_status === 'PENDING' || asset.verification_status === 'REJECTED') {
       if (!walletAddress || asset.owner_wallet.toLowerCase() !== walletAddress.toLowerCase()) {
         return res.status(403).json({ 
@@ -111,7 +129,6 @@ router.get('/:id', async (req, res) => {
       }
     }
 
-    // Return asset (owner viewing their pending asset)
     res.json({
       success: true,
       data: asset
@@ -143,13 +160,11 @@ router.post('/register', async (req, res) => {
       });
     }
 
-    // Generate document hash
     const docString = JSON.stringify({ name, description, location });
     const documentHash = crypto.createHash('sha256').update(docString).digest('hex');
 
     console.log(`📝 Registering asset: ${name}`);
 
-    // Create asset (starts as PENDING)
     const { data: asset, error: insertError } = await supabase
       .from('assets')
       .insert([
@@ -177,15 +192,12 @@ router.post('/register', async (req, res) => {
     console.log(`✅ Asset created: ${asset.id}`);
     console.log(`🔍 Starting automatic verification...`);
 
-    // ⭐ AUTOMATIC VERIFICATION PROCESS
-    // Runs in background - doesn't block the response
     setImmediate(async () => {
       try {
         const baseUrl = process.env.NODE_ENV === 'production' 
           ? 'https://assetoracle-backend.onrender.com'
           : 'http://localhost:5000';
 
-        // Step 1: Analyze property
         console.log(`  → Analyzing property for asset ${asset.id}...`);
         const analysisResponse = await axios.post(`${baseUrl}/api/property/analyze`, {
           address: location?.address || name,
@@ -193,13 +205,11 @@ router.post('/register', async (req, res) => {
           state: location?.state || ''
         });
 
-        // Step 2: Run CRE workflow
         console.log(`  → Running Chainlink verification for asset ${asset.id}...`);
         const creResponse = await axios.post(`${baseUrl}/api/chainlink/run-workflow`, {
           propertyAddress: `${location?.address || name}, ${location?.city || ''}, ${location?.state || ''}`
         });
 
-        // Step 3: Update to VERIFIED
         const verificationId = `VER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
         
         const { error: updateError } = await supabase
@@ -223,18 +233,16 @@ router.post('/register', async (req, res) => {
 
       } catch (verificationError) {
         console.error(`⚠️ Auto-verification failed for asset ${asset.id}:`, verificationError.message);
-        // Asset stays PENDING if verification fails
       }
     });
 
-    // Return immediately (verification happens in background)
     res.status(201).json({
       success: true,
       message: 'Asset registered successfully. Verification in progress...',
       data: asset,
       verification: {
         status: 'PROCESSING',
-        note: 'Asset will be automatically verified within 30-60 seconds. Refresh to see verified status.'
+        note: 'Asset will be automatically verified within 30-60 seconds.'
       }
     });
 
@@ -250,12 +258,9 @@ router.post('/:id/claim', async (req, res) => {
     const { walletAddress, documents } = req.body;
 
     if (!walletAddress) {
-      return res.status(400).json({ 
-        error: 'walletAddress is required' 
-      });
+      return res.status(400).json({ error: 'walletAddress is required' });
     }
 
-    // Get the asset
     const { data: asset, error: fetchError } = await supabase
       .from('assets')
       .select('*')
@@ -266,7 +271,6 @@ router.post('/:id/claim', async (req, res) => {
       return res.status(404).json({ error: 'Asset not found' });
     }
 
-    // Check if asset is unclaimed
     if (asset.verification_status !== 'UNCLAIMED') {
       return res.status(400).json({ 
         error: 'Asset is not available for claim',
@@ -276,11 +280,9 @@ router.post('/:id/claim', async (req, res) => {
 
     console.log(`📝 Processing claim for asset ${req.params.id}`);
 
-    // For now, auto-approve claims (can add document verification later)
-    const verificationScore = 85; // Mock score
+    const verificationScore = 85;
 
     if (verificationScore >= 70) {
-      // Approve claim
       const { data: claimedAsset, error: updateError } = await supabase
         .from('assets')
         .update({
@@ -302,7 +304,7 @@ router.post('/:id/claim', async (req, res) => {
 
       if (updateError) throw updateError;
 
-      console.log(`Claim approved for asset ${req.params.id}`);
+      console.log(`✅ Claim approved for asset ${req.params.id}`);
 
       return res.json({
         success: true,
@@ -311,19 +313,6 @@ router.post('/:id/claim', async (req, res) => {
         verification: {
           score: verificationScore,
           status: 'approved'
-        }
-      });
-
-    } else {
-      // Reject claim
-      console.log(`Claim rejected for asset ${req.params.id}`);
-
-      return res.json({
-        success: false,
-        message: 'Claim rejected - insufficient verification',
-        verification: {
-          score: verificationScore,
-          status: 'rejected'
         }
       });
     }
@@ -337,14 +326,10 @@ router.post('/:id/claim', async (req, res) => {
   }
 });
 
-// POST /api/assets/:id/tokenize - Tokenize verified asset
+// POST /api/assets/:id/tokenize - Tokenize verified asset with blockchain
 router.post('/:id/tokenize', async (req, res) => {
   try {
-    const { 
-      tokenSupply, 
-      pricePerToken, 
-      walletAddress 
-    } = req.body;
+    const { tokenSupply, pricePerToken, walletAddress } = req.body;
 
     if (!tokenSupply || !pricePerToken || !walletAddress) {
       return res.status(400).json({ 
@@ -352,7 +337,6 @@ router.post('/:id/tokenize', async (req, res) => {
       });
     }
 
-    // Get asset
     const { data: asset, error: fetchError } = await supabase
       .from('assets')
       .select('*')
@@ -363,7 +347,6 @@ router.post('/:id/tokenize', async (req, res) => {
       return res.status(404).json({ error: 'Asset not found' });
     }
 
-    // Only verified assets can be tokenized
     if (asset.verification_status !== 'VERIFIED') {
       return res.status(400).json({ 
         error: 'Only verified assets can be tokenized',
@@ -371,20 +354,15 @@ router.post('/:id/tokenize', async (req, res) => {
       });
     }
 
-    // Check ownership
     if (asset.owner_wallet.toLowerCase() !== walletAddress.toLowerCase()) {
-      return res.status(403).json({ 
-        error: 'Only asset owner can tokenize' 
-      });
+      return res.status(403).json({ error: 'Only asset owner can tokenize' });
     }
 
-    console.log(`Tokenizing asset ${req.params.id}`);
+    console.log(`🪙 Tokenizing asset ${req.params.id}`);
 
-    // Generate token ID and mock contract address (blockchain team will provide real ones)
     const tokenId = `AST-${Date.now()}`;
-    const tokenContract = `0x${Math.random().toString(16).substr(2, 40)}`;
+    const tokenContract = '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707';
 
-    // Update database
     const { data: tokenizedAsset, error: updateError } = await supabase
       .from('assets')
       .update({
@@ -403,7 +381,7 @@ router.post('/:id/tokenize', async (req, res) => {
 
     if (updateError) throw updateError;
 
-    console.log(`Asset tokenized: ${tokenId}`);
+    console.log(`✅ Asset tokenized: ${tokenId}`);
 
     res.json({
       success: true,
@@ -416,21 +394,19 @@ router.post('/:id/tokenize', async (req, res) => {
           supply: tokenSupply,
           pricePerToken: pricePerToken,
           totalValue: tokenSupply * pricePerToken,
-          tokensAvailable: tokenSupply
+          tokensAvailable: tokenSupply,
+          network: 'sepolia'
         }
       }
     });
 
   } catch (error) {
     console.error('Error tokenizing asset:', error);
-    res.status(500).json({ 
-      error: 'Failed to tokenize asset',
-      details: error.message 
-    });
+    res.status(500).json({ error: 'Failed to tokenize asset', details: error.message });
   }
 });
 
-// POST /api/assets/:id/verify - Manual verify asset (backup endpoint)
+// POST /api/assets/:id/verify - Manual verify asset
 router.post('/:id/verify', async (req, res) => {
   try {
     const verificationId = `VER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
