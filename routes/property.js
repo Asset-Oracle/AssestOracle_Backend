@@ -69,8 +69,8 @@ router.post('/analyze', async (req, res) => {
       console.log('Calling Noah\'s AI service...');
       
       // Call Noah's COMPLETE analysis endpoint
-      const aiResponse = await axios.post('http://localhost:5001/api/analyze-complete', {
-        address: address,
+      const AI_SERVICE_URL = process.env.AI_SERVICE_URL || 'http://localhost:5001';
+      const aiResponse = await axios.post(`${AI_SERVICE_URL}/api/analyze-complete`, {
         location: `${city}, ${state}`,
         property_type: 'Real Estate',
         documents: [],
