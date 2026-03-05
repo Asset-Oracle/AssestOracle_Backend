@@ -15,6 +15,7 @@ const assetRoutes = require('./routes/assets');
 const userRoutes = require('./routes/user');
 const propertyRoutes = require('./routes/property');
 const chainlinkRoutes = require('./routes/chainlink');
+const uploadRoutes = require('./routes/upload');
 // Use routes
 // Use routes
 app.use('/api/auth', authRoutes);
@@ -22,6 +23,7 @@ app.use('/api/assets', assetRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/property', propertyRoutes);
 app.use('/api/chainlink', chainlinkRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Root route - API information
 app.get('/', (req, res) => {

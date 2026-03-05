@@ -55,6 +55,29 @@ router.get('/', async (req, res) => {
   }
 });
 
+// GET /api/assets/unclaimed - Get unclaimed assets (MUST BE BEFORE /:id)
+router.get('/unclaimed', async (req, res) => {
+  try {
+    const { data: assets, error } = await supabase
+      .from('assets')
+      .select('*')
+      .eq('verification_status', 'UNCLAIMED')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    res.json({
+      success: true,
+      data: assets || [],
+      count: assets ? assets.length : 0
+    });
+
+  } catch (error) {
+    console.error('Error fetching unclaimed assets:', error);
+    res.status(500).json({ error: 'Failed to fetch unclaimed assets' });
+  }
+});
+
 // GET /api/assets/:id - Get single asset (VERIFIED = public, PENDING = owner only)
 router.get('/:id', async (req, res) => {
   try {
@@ -218,6 +241,192 @@ router.post('/register', async (req, res) => {
   } catch (error) {
     console.error('Error registering asset:', error);
     res.status(500).json({ error: 'Failed to register asset' });
+  }
+});
+
+// POST /api/assets/:id/claim - Claim an unclaimed asset
+router.post('/:id/claim', async (req, res) => {
+  try {
+    const { walletAddress, documents } = req.body;
+
+    if (!walletAddress) {
+      return res.status(400).json({ 
+        error: 'walletAddress is required' 
+      });
+    }
+
+    // Get the asset
+    const { data: asset, error: fetchError } = await supabase
+      .from('assets')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !asset) {
+      return res.status(404).json({ error: 'Asset not found' });
+    }
+
+    // Check if asset is unclaimed
+    if (asset.verification_status !== 'UNCLAIMED') {
+      return res.status(400).json({ 
+        error: 'Asset is not available for claim',
+        currentStatus: asset.verification_status
+      });
+    }
+
+    console.log(`📝 Processing claim for asset ${req.params.id}`);
+
+    // For now, auto-approve claims (can add document verification later)
+    const verificationScore = 85; // Mock score
+
+    if (verificationScore >= 70) {
+      // Approve claim
+      const { data: claimedAsset, error: updateError } = await supabase
+        .from('assets')
+        .update({
+          owner_wallet: walletAddress.toLowerCase(),
+          verification_status: 'VERIFIED',
+          claimed_by: walletAddress.toLowerCase(),
+          claim_status: 'approved',
+          claimed_at: new Date().toISOString(),
+          verification_documents: documents || [],
+          blockchain_data: {
+            ...asset.blockchain_data,
+            verification_id: `VER-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            verified_at: new Date().toISOString()
+          }
+        })
+        .eq('id', req.params.id)
+        .select()
+        .single();
+
+      if (updateError) throw updateError;
+
+      console.log(`Claim approved for asset ${req.params.id}`);
+
+      return res.json({
+        success: true,
+        message: 'Claim approved - asset ownership transferred',
+        data: claimedAsset,
+        verification: {
+          score: verificationScore,
+          status: 'approved'
+        }
+      });
+
+    } else {
+      // Reject claim
+      console.log(`Claim rejected for asset ${req.params.id}`);
+
+      return res.json({
+        success: false,
+        message: 'Claim rejected - insufficient verification',
+        verification: {
+          score: verificationScore,
+          status: 'rejected'
+        }
+      });
+    }
+
+  } catch (error) {
+    console.error('Error processing claim:', error);
+    res.status(500).json({ 
+      error: 'Failed to process claim',
+      details: error.message 
+    });
+  }
+});
+
+// POST /api/assets/:id/tokenize - Tokenize verified asset
+router.post('/:id/tokenize', async (req, res) => {
+  try {
+    const { 
+      tokenSupply, 
+      pricePerToken, 
+      walletAddress 
+    } = req.body;
+
+    if (!tokenSupply || !pricePerToken || !walletAddress) {
+      return res.status(400).json({ 
+        error: 'Missing required fields: tokenSupply, pricePerToken, walletAddress' 
+      });
+    }
+
+    // Get asset
+    const { data: asset, error: fetchError } = await supabase
+      .from('assets')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !asset) {
+      return res.status(404).json({ error: 'Asset not found' });
+    }
+
+    // Only verified assets can be tokenized
+    if (asset.verification_status !== 'VERIFIED') {
+      return res.status(400).json({ 
+        error: 'Only verified assets can be tokenized',
+        currentStatus: asset.verification_status
+      });
+    }
+
+    // Check ownership
+    if (asset.owner_wallet.toLowerCase() !== walletAddress.toLowerCase()) {
+      return res.status(403).json({ 
+        error: 'Only asset owner can tokenize' 
+      });
+    }
+
+    console.log(`Tokenizing asset ${req.params.id}`);
+
+    // Generate token ID and mock contract address (blockchain team will provide real ones)
+    const tokenId = `AST-${Date.now()}`;
+    const tokenContract = `0x${Math.random().toString(16).substr(2, 40)}`;
+
+    // Update database
+    const { data: tokenizedAsset, error: updateError } = await supabase
+      .from('assets')
+      .update({
+        is_tokenized: true,
+        token_id: tokenId,
+        token_contract_address: tokenContract,
+        token_supply: tokenSupply,
+        price_per_token: pricePerToken,
+        tokens_available: tokenSupply,
+        tokenized_at: new Date().toISOString(),
+        verification_status: 'TOKENIZED'
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    console.log(`Asset tokenized: ${tokenId}`);
+
+    res.json({
+      success: true,
+      message: 'Asset tokenized successfully',
+      data: {
+        asset: tokenizedAsset,
+        tokenization: {
+          tokenId: tokenId,
+          contractAddress: tokenContract,
+          supply: tokenSupply,
+          pricePerToken: pricePerToken,
+          totalValue: tokenSupply * pricePerToken,
+          tokensAvailable: tokenSupply
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error tokenizing asset:', error);
+    res.status(500).json({ 
+      error: 'Failed to tokenize asset',
+      details: error.message 
+    });
   }
 });
 

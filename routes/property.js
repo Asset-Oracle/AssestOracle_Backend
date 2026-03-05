@@ -64,50 +64,59 @@ router.post('/analyze', async (req, res) => {
 
     // AI Analysis (Noah will replace this)
     // AI Analysis - Call Noah's AI Service
-let aiAnalysis;
-try {
-  const aiResponse = await axios.post('http://localhost:5001/api/score-investment', {
-    property_type: 'Real Estate',
-    location: `${city}, ${state}`,
-    valuation: valuationData.estimatedValue,
-    annual_yield: calculateYield(valuationData.estimatedValue, registryData.taxAssessment),
-    market_data: {
-      avg_price_per_sqft: valuationData.pricePerSqFt,
-      trend: valuationData.marketTrend,
-      comparable_sales: `${valuationData.comparables.length} recent sales`
+    let aiAnalysis;
+    try {
+      console.log('Calling Noah\'s AI service...');
+      
+      // Call Noah's COMPLETE analysis endpoint
+      const aiResponse = await axios.post('http://localhost:5001/api/analyze-complete', {
+        address: address,
+        location: `${city}, ${state}`,
+        property_type: 'Real Estate',
+        documents: [],
+        valuation: 500000,
+        annual_yield: 5.0
+      });
+
+      const analysis = aiResponse.data.data;
+      console.log('Got response from Noah\'s AI');
+
+      // Transform Noah's response to our format
+      aiAnalysis = {
+        riskScore: Math.round(analysis.final_recommendation.overall_score),
+        fraudLikelihood: analysis.final_recommendation.overall_score >= 80 ? 'LOW' : 
+                         analysis.final_recommendation.overall_score >= 60 ? 'MEDIUM' : 'HIGH',
+        investmentSummary: analysis.final_recommendation.summary,
+        yieldPotential: 5.0,
+        recommendation: analysis.final_recommendation.recommendation,
+        
+        // Additional details from Noah
+        verificationScore: analysis.analysis_stages.document_verification.verification_score,
+        investmentScore: analysis.analysis_stages.investment_analysis.investment_score,
+        strengths: analysis.analysis_stages.investment_analysis.strengths,
+        risks: analysis.analysis_stages.investment_analysis.risks,
+        opportunities: analysis.analysis_stages.investment_analysis.opportunities,
+        
+        confidenceLevel: 0.85,
+        analyzedAt: new Date().toISOString()
+      };
+
+      console.log('AI Analysis integrated successfully');
+
+    } catch (error) {
+      console.error('AI service unavailable, using fallback:', error.message);
+      
+      // Fallback if Noah's service is down
+      aiAnalysis = {
+        riskScore: riskScore,
+        fraudLikelihood: 'MEDIUM',
+        investmentSummary: `Property analysis based on available data. Market shows ${valuationData.marketTrend.toLowerCase()} trends.`,
+        yieldPotential: 5.0,
+        recommendation: 'HOLD',
+        confidenceLevel: 0.5,
+        analyzedAt: new Date().toISOString()
+      };
     }
-  });
-
-  // Transform Noah's response to our format
-  const noahResult = aiResponse.data.data;
-  aiAnalysis = {
-    riskScore: noahResult.investment_score || 75,
-    fraudLikelihood: determineFraudLikelihood(noahResult.risks),
-    investmentSummary: noahResult.summary,
-    yieldPotential: propertyData.annual_yield || 5.0,
-    recommendation: getRecommendation(noahResult.investment_score),
-    strengths: noahResult.strengths,
-    risks: noahResult.risks,
-    opportunities: noahResult.opportunities,
-    confidenceLevel: 0.85,
-    analyzedAt: new Date().toISOString()
-  };
-
-  console.log('AI Analysis received from Noah\'s service');
-
-} catch (error) {
-  console.error('AI service unavailable, using fallback:', error.message);
-  // Fallback if Noah's service is down
-  aiAnalysis = {
-    riskScore: riskScore,
-    fraudLikelihood: 'MEDIUM',
-    investmentSummary: `Property analysis based on available data. Market shows ${valuationData.marketTrend.toLowerCase()} trends.`,
-    yieldPotential: 5.0,
-    recommendation: 'HOLD',
-    confidenceLevel: 0.5,
-    analyzedAt: new Date().toISOString()
-  };
-}
 
 // Helper functions
 function calculateYield(value, taxAssessment) {
