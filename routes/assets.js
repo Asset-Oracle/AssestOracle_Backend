@@ -326,7 +326,7 @@ router.post('/:id/claim', async (req, res) => {
   }
 });
 
-// POST /api/assets/:id/tokenize - Tokenize verified asset with blockchain
+// POST /api/assets/:id/tokenize - Tokenize verified asset with blockchain contract
 router.post('/:id/tokenize', async (req, res) => {
   try {
     const { tokenSupply, pricePerToken, walletAddress } = req.body;
@@ -361,14 +361,15 @@ router.post('/:id/tokenize', async (req, res) => {
     console.log(`🪙 Tokenizing asset ${req.params.id}`);
 
     const tokenId = `AST-${Date.now()}`;
-    const tokenContract = '0x5FC8d32690cc91D4c39d9d3abcBD16989F875707';
+    const TOKEN_CONTRACT_ADDRESS = "0x17412965b7e899A84f9a4D74fC3F5f36463Cf8b9";
 
+    // Update database
     const { data: tokenizedAsset, error: updateError } = await supabase
       .from('assets')
       .update({
         is_tokenized: true,
         token_id: tokenId,
-        token_contract_address: tokenContract,
+        token_contract_address: TOKEN_CONTRACT_ADDRESS,
         token_supply: tokenSupply,
         price_per_token: pricePerToken,
         tokens_available: tokenSupply,
@@ -390,12 +391,12 @@ router.post('/:id/tokenize', async (req, res) => {
         asset: tokenizedAsset,
         tokenization: {
           tokenId: tokenId,
-          contractAddress: tokenContract,
+          contractAddress: TOKEN_CONTRACT_ADDRESS,
           supply: tokenSupply,
           pricePerToken: pricePerToken,
           totalValue: tokenSupply * pricePerToken,
           tokensAvailable: tokenSupply,
-          network: 'sepolia'
+          network: 'avalanche-fuji'
         }
       }
     });
