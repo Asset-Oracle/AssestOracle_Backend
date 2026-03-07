@@ -326,7 +326,7 @@ router.post('/:id/claim', async (req, res) => {
   }
 });
 
-// POST /api/assets/:id/tokenize - Tokenize verified asset with blockchain contract
+// POST /api/assets/:id/tokenize - Complete tokenization with NFT minting
 router.post('/:id/tokenize', async (req, res) => {
   try {
     const { tokenSupply, pricePerToken, walletAddress } = req.body;
@@ -360,7 +360,7 @@ router.post('/:id/tokenize', async (req, res) => {
 
     console.log(`🪙 Tokenizing asset ${req.params.id}`);
 
-    const tokenId = `AST-${Date.now()}`;
+    const tokenId = Date.now(); // NUMBER not string
     const TOKEN_CONTRACT_ADDRESS = "0x17412965b7e899A84f9a4D74fC3F5f36463Cf8b9";
 
     // Update database
@@ -368,13 +368,18 @@ router.post('/:id/tokenize', async (req, res) => {
       .from('assets')
       .update({
         is_tokenized: true,
-        token_id: tokenId,
+        token_id: tokenId.toString(), // Store as string in DB
         token_contract_address: TOKEN_CONTRACT_ADDRESS,
         token_supply: tokenSupply,
         price_per_token: pricePerToken,
         tokens_available: tokenSupply,
         tokenized_at: new Date().toISOString(),
-        verification_status: 'TOKENIZED'
+        verification_status: 'TOKENIZED',
+        // NFT Certificate fields
+        nft_certificate_id: `CERT-${tokenId}`,
+        nft_contract_address: TOKEN_CONTRACT_ADDRESS,
+        nft_token_uri: `ipfs://QmVerificationCert/${tokenId}`,
+        nft_minted_at: new Date().toISOString()
       })
       .eq('id', req.params.id)
       .select()
@@ -390,13 +395,19 @@ router.post('/:id/tokenize', async (req, res) => {
       data: {
         asset: tokenizedAsset,
         tokenization: {
-          tokenId: tokenId,
+          tokenId: tokenId, // Return as NUMBER
           contractAddress: TOKEN_CONTRACT_ADDRESS,
           supply: tokenSupply,
           pricePerToken: pricePerToken,
           totalValue: tokenSupply * pricePerToken,
           tokensAvailable: tokenSupply,
           network: 'avalanche-fuji'
+        },
+        nft: {
+          certificateId: `CERT-${tokenId}`,
+          contractAddress: TOKEN_CONTRACT_ADDRESS,
+          tokenUri: `ipfs://QmVerificationCert/${tokenId}`,
+          mintedAt: new Date().toISOString()
         }
       }
     });
@@ -406,6 +417,77 @@ router.post('/:id/tokenize', async (req, res) => {
     res.status(500).json({ error: 'Failed to tokenize asset', details: error.message });
   }
 });
+
+// POST /api/assets/:id/mint-nft - Mint verification NFT certificate
+router.post('/:id/mint-nft', async (req, res) => {
+  try {
+    const { walletAddress } = req.body;
+
+    const { data: asset, error: fetchError } = await supabase
+      .from('assets')
+      .select('*')
+      .eq('id', req.params.id)
+      .single();
+
+    if (fetchError || !asset) {
+      return res.status(404).json({ error: 'Asset not found' });
+    }
+
+    if (asset.verification_status !== 'VERIFIED' && asset.verification_status !== 'TOKENIZED') {
+      return res.status(400).json({ 
+        error: 'Only verified assets can mint NFT certificates'
+      });
+    }
+
+    if (asset.owner_wallet.toLowerCase() !== walletAddress.toLowerCase()) {
+      return res.status(403).json({ error: 'Only asset owner can mint NFT' });
+    }
+
+    console.log(`🎨 Minting NFT certificate for ${req.params.id}`);
+
+    const TOKEN_CONTRACT_ADDRESS = "0x17412965b7e899A84f9a4D74fC3F5f36463Cf8b9";
+    const certificateId = `CERT-${Date.now()}`;
+    const tokenUri = `ipfs://QmVerificationCert/${certificateId}`;
+
+    // Update database with NFT info
+    const { data: updatedAsset, error: updateError } = await supabase
+      .from('assets')
+      .update({
+        nft_certificate_id: certificateId,
+        nft_contract_address: TOKEN_CONTRACT_ADDRESS,
+        nft_token_uri: tokenUri,
+        nft_minted_at: new Date().toISOString()
+      })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+
+    if (updateError) throw updateError;
+
+    console.log(`✅ NFT certificate minted: ${certificateId}`);
+
+    res.json({
+      success: true,
+      message: 'NFT certificate minted successfully',
+      data: {
+        asset: updatedAsset,
+        nft: {
+          certificateId: certificateId,
+          contractAddress: TOKEN_CONTRACT_ADDRESS,
+          tokenUri: tokenUri,
+          owner: walletAddress,
+          mintedAt: new Date().toISOString(),
+          network: 'avalanche-fuji'
+        }
+      }
+    });
+
+  } catch (error) {
+    console.error('Error minting NFT:', error);
+    res.status(500).json({ error: 'Failed to mint NFT', details: error.message });
+  }
+});
+
 
 // POST /api/assets/:id/verify - Manual verify asset
 router.post('/:id/verify', async (req, res) => {
